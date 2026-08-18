@@ -39,8 +39,8 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     user.ultimo_acceso = datetime.now()
     db.commit()
 
-    # Guardar sub como int
-    token = create_access_token({"sub": user.id, "rol": user.rol})
+    # python-jose exige que 'sub' sea string, si no, falla el decode ("Subject must be a string")
+    token = create_access_token({"sub": str(user.id), "rol": user.rol})
     return {
         "access_token": token,
         "token_type": "bearer",
