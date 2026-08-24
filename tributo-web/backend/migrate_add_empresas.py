@@ -52,9 +52,9 @@ EMPRESAS_SEED = [
 ]
 
 MODULOS_POR_DEFECTO = {
-    "Tributo":                 ["POS", "RESTAURANT", "INVENTARIO", "RECETAS", "CAJA", "COMPRAS", "CLIENTES", "REPORTES"],
-    "Destilado Bodegon":       ["POS", "INVENTARIO", "RECETAS", "CAJA", "COMPRAS", "CLIENTES", "REPORTES"],
-    "Comercializadora Chagoz": ["POS", "INVENTARIO", "RECETAS", "CAJA", "COMPRAS", "CLIENTES", "REPORTES"],
+    "Tributo":                 ["POS", "RESTAURANT", "VENTAS", "INVENTARIO", "RECETAS", "CAJA", "COMPRAS", "CLIENTES", "REPORTES"],
+    "Destilado Bodegon":       ["POS", "VENTAS", "INVENTARIO", "RECETAS", "CAJA", "COMPRAS", "CLIENTES", "REPORTES"],
+    "Comercializadora Chagoz": ["POS", "VENTAS", "INVENTARIO", "RECETAS", "CAJA", "COMPRAS", "CLIENTES", "REPORTES"],
 }
 
 

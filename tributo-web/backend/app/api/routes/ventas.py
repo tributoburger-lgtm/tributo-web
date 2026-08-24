@@ -180,22 +180,34 @@ def listar_ventas(
     desde: Optional[str] = None,
     hasta: Optional[str] = None,
     estado: Optional[str] = None,
-    limit: int = 50,
+    search: Optional[str] = None,
+    limit: int = 100,
     db: Session = Depends(get_db),
     empresa_id: int = Depends(get_empresa_actual),
     _=Depends(get_current_user)
 ):
-    q = db.query(Venta).filter(Venta.empresa_id == empresa_id).order_by(desc(Venta.fecha_venta))
+    from app.models.models import Cliente
+    q = db.query(Venta, Cliente.nombre).outerjoin(
+        Cliente, Venta.cliente_id == Cliente.id
+    ).filter(Venta.empresa_id == empresa_id).order_by(desc(Venta.fecha_venta))
     if desde:
         q = q.filter(Venta.fecha_venta >= desde)
     if hasta:
         q = q.filter(Venta.fecha_venta <= hasta + " 23:59:59")
     if estado:
         q = q.filter(Venta.estado == estado)
-    ventas = q.limit(limit).all()
-    return [{"id": v.id, "numero_venta": v.numero_venta, "total_usd": v.total_usd,
-             "estado": v.estado, "fecha_venta": v.fecha_venta, "anulada": v.anulada}
-            for v in ventas]
+    if search:
+        q = q.filter(Venta.numero_venta.ilike(f"%{search}%"))
+    rows = q.limit(limit).all()
+    return [
+        {
+            "id": v.id, "numero_venta": v.numero_venta, "tipo": v.tipo,
+            "total_usd": v.total_usd, "estado": v.estado,
+            "fecha_venta": v.fecha_venta, "anulada": v.anulada,
+            "cliente_nombre": cliente_nombre,
+        }
+        for v, cliente_nombre in rows
+    ]
 
 
 @router.get("/{venta_id}")
@@ -210,7 +222,33 @@ def obtener_venta(
     ).filter(Venta.id == venta_id, Venta.empresa_id == empresa_id).first()
     if not v:
         raise HTTPException(404, "Venta no encontrada")
-    return v
+
+    from app.models.models import Cliente, Usuario
+    cliente = db.query(Cliente).filter(Cliente.id == v.cliente_id).first() if v.cliente_id else None
+    usuario = db.query(Usuario).filter(Usuario.id == v.usuario_id).first()
+
+    return {
+        "id": v.id, "numero_venta": v.numero_venta, "tipo": v.tipo, "estado": v.estado,
+        "anulada": v.anulada, "motivo_anulacion": v.motivo_anulacion,
+        "fecha_venta": v.fecha_venta, "anulada_en": v.anulada_en,
+        "subtotal_usd": v.subtotal_usd, "total_usd": v.total_usd,
+        "total_pagado_usd": v.total_pagado_usd,
+        "moneda_display": v.moneda_display,
+        "cliente_nombre": cliente.nombre if cliente else None,
+        "usuario_nombre": usuario.nombre_completo if usuario else None,
+        "items": [
+            {
+                "id": d.id, "nombre": d.nombre_producto + (f" {d.nombre_variante}" if d.nombre_variante else ""),
+                "cantidad": d.cantidad, "precio_unitario_usd": d.precio_unitario_usd,
+                "subtotal_usd": d.subtotal_usd, "devuelto": d.devuelto,
+            }
+            for d in v.detalles
+        ],
+        "pagos": [
+            {"metodo_pago": p.metodo_pago, "moneda": p.moneda, "monto": p.monto, "monto_usd": p.monto_usd}
+            for p in v.pagos
+        ],
+    }
 
 
 @router.post("/")
