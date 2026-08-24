@@ -169,27 +169,42 @@ def stock_actual(
     empresa_id: int = Depends(get_empresa_actual),
     _=Depends(get_current_user)
 ):
-    rows = db.query(Inventario, Producto).join(
-        Producto, Inventario.producto_id == Producto.id
+    """
+    Muestra TODOS los productos activos, incluyendo los que tienen
+    tiene_inventario=False (como algunas hamburguesas o extras que
+    solo se controlan por receta) — esos salen marcados como "Sin
+    seguimiento" en vez de OK/BAJO/CRITICO, pero siguen siendo
+    clicables para ver su Kardex si tuvieron algun movimiento.
+    """
+    rows = db.query(Producto, Inventario).outerjoin(
+        Inventario, (Inventario.producto_id == Producto.id) & (Inventario.variante_id == None)
     ).filter(
         Producto.empresa_id == empresa_id,
         Producto.activo == True,
-        Producto.tiene_inventario == True
     ).order_by(Producto.nombre).all()
-    return [
-        {
-            "producto_id": inv.producto_id,
+
+    result = []
+    for prod, inv in rows:
+        cantidad = inv.cantidad if inv else 0.0
+        if not prod.tiene_inventario:
+            estado = "SIN_SEGUIMIENTO"
+        elif cantidad <= prod.stock_critico:
+            estado = "CRITICO"
+        elif cantidad <= prod.stock_minimo:
+            estado = "BAJO"
+        else:
+            estado = "OK"
+        result.append({
+            "producto_id": prod.id,
             "nombre": prod.nombre,
-            "cantidad": inv.cantidad,
+            "cantidad": cantidad,
             "unidad": prod.unidad,
             "stock_minimo": prod.stock_minimo,
             "stock_critico": prod.stock_critico,
-            "estado": "CRITICO" if inv.cantidad <= prod.stock_critico
-                      else "BAJO" if inv.cantidad <= prod.stock_minimo
-                      else "OK"
-        }
-        for inv, prod in rows
-    ]
+            "tiene_inventario": prod.tiene_inventario,
+            "estado": estado,
+        })
+    return result
 
 
 @router.get("/valorizacion")
