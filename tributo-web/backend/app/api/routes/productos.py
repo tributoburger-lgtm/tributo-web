@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from app.core.database import get_db
-from app.api.routes.auth import get_current_user
+from app.api.routes.auth import get_current_user, get_empresa_actual
 from app.models.models import Producto, ProductoVariante, Categoria, Inventario
 
 router = APIRouter()
@@ -15,12 +15,13 @@ def listar_productos(
     tipo: Optional[str] = None,
     search: Optional[str] = None,
     db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
     _=Depends(get_current_user)
 ):
     q = db.query(Producto).options(
         joinedload(Producto.categoria),
         joinedload(Producto.variantes)
-    )
+    ).filter(Producto.empresa_id == empresa_id)
     if activo is not None:
         q = q.filter(Producto.activo == activo)
     if categoria_id:
@@ -74,19 +75,28 @@ def listar_productos(
 
 
 @router.get("/{producto_id}")
-def obtener_producto(producto_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def obtener_producto(
+    producto_id: int, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
     p = db.query(Producto).options(
         joinedload(Producto.variantes),
         joinedload(Producto.receta)
-    ).filter(Producto.id == producto_id).first()
+    ).filter(Producto.id == producto_id, Producto.empresa_id == empresa_id).first()
     if not p:
         raise HTTPException(404, "Producto no encontrado")
     return p
 
 
 @router.post("/")
-def crear_producto(data: dict, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    p = Producto(**{k: v for k, v in data.items() if hasattr(Producto, k)})
+def crear_producto(
+    data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    campos = {k: v for k, v in data.items() if hasattr(Producto, k) and k != "empresa_id"}
+    p = Producto(**campos, empresa_id=empresa_id)
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -94,17 +104,27 @@ def crear_producto(data: dict, db: Session = Depends(get_db), _=Depends(get_curr
 
 
 @router.put("/{producto_id}")
-def actualizar_producto(producto_id: int, data: dict, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    p = db.query(Producto).filter(Producto.id == producto_id).first()
+def actualizar_producto(
+    producto_id: int, data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    p = db.query(Producto).filter(Producto.id == producto_id, Producto.empresa_id == empresa_id).first()
     if not p:
         raise HTTPException(404, "Producto no encontrado")
     for k, v in data.items():
-        if hasattr(p, k) and k != "id":
+        if hasattr(p, k) and k not in ("id", "empresa_id"):
             setattr(p, k, v)
     db.commit()
     return {"ok": True}
 
 
 @router.get("/categorias/lista")
-def listar_categorias(db: Session = Depends(get_db), _=Depends(get_current_user)):
-    return db.query(Categoria).filter(Categoria.activo == True).order_by(Categoria.nombre).all()
+def listar_categorias(
+    db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    return db.query(Categoria).filter(
+        Categoria.activo == True, Categoria.empresa_id == empresa_id
+    ).order_by(Categoria.nombre).all()

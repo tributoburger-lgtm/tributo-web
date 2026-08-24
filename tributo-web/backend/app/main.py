@@ -9,7 +9,7 @@ from app.core.database import engine, Base
 from app.api.routes import (
     auth, productos, ventas, inventario,
     caja, reportes, compras, clientes,
-    restaurant, configuracion
+    restaurant, configuracion, mermas, recetas
 )
 
 app = FastAPI(
@@ -37,6 +37,8 @@ app.include_router(compras.router,       prefix="/api/compras",       tags=["Com
 app.include_router(clientes.router,      prefix="/api/clientes",      tags=["Clientes"])
 app.include_router(restaurant.router,    prefix="/api/restaurant",    tags=["Restaurant"])
 app.include_router(configuracion.router, prefix="/api/config",        tags=["Configuracion"])
+app.include_router(mermas.router,        prefix="/api/mermas",        tags=["Mermas"])
+app.include_router(recetas.router,       prefix="/api/recetas",       tags=["Recetas"])
 
 @app.get("/")
 def root():

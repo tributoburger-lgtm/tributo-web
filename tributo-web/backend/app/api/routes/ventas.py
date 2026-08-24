@@ -4,7 +4,7 @@ from sqlalchemy import desc
 from datetime import datetime
 from typing import Optional, List
 from app.core.database import get_db
-from app.api.routes.auth import get_current_user
+from app.api.routes.auth import get_current_user, get_empresa_actual
 from app.models.models import (
     Venta, DetalleVenta, PagoVenta, Producto, ProductoVariante,
     Inventario, MovimientoInventario, Receta, DetalleReceta,
@@ -14,9 +14,9 @@ from app.models.models import (
 router = APIRouter()
 
 
-def _generar_numero_venta(db: Session) -> str:
+def _generar_numero_venta(db: Session, empresa_id: int) -> str:
     from sqlalchemy import func
-    count = db.query(func.count(Venta.id)).scalar() or 0
+    count = db.query(func.count(Venta.id)).filter(Venta.empresa_id == empresa_id).scalar() or 0
     ahora = datetime.now()
     return f"SAPOS-{ahora.strftime('%Y%m%d')}-{str(count+1).zfill(6)}"
 
@@ -135,9 +135,10 @@ def listar_ventas(
     estado: Optional[str] = None,
     limit: int = 50,
     db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
     _=Depends(get_current_user)
 ):
-    q = db.query(Venta).order_by(desc(Venta.fecha_venta))
+    q = db.query(Venta).filter(Venta.empresa_id == empresa_id).order_by(desc(Venta.fecha_venta))
     if desde:
         q = q.filter(Venta.fecha_venta >= desde)
     if hasta:
@@ -151,18 +152,26 @@ def listar_ventas(
 
 
 @router.get("/{venta_id}")
-def obtener_venta(venta_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def obtener_venta(
+    venta_id: int, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
     v = db.query(Venta).options(
         joinedload(Venta.detalles),
         joinedload(Venta.pagos)
-    ).filter(Venta.id == venta_id).first()
+    ).filter(Venta.id == venta_id, Venta.empresa_id == empresa_id).first()
     if not v:
         raise HTTPException(404, "Venta no encontrada")
     return v
 
 
 @router.post("/")
-def crear_venta(data: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+def crear_venta(
+    data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    user=Depends(get_current_user)
+):
     """
     data = {
         "tipo": "RAPIDA",
@@ -180,11 +189,14 @@ def crear_venta(data: dict, db: Session = Depends(get_db), user=Depends(get_curr
         ]
     }
     """
-    # Turno activo
+    # Turno activo — debe ser de la empresa activa, no de cualquier otra
     turno = db.query(TurnoCaja).filter(
         TurnoCaja.usuario_id == user.id,
+        TurnoCaja.empresa_id == empresa_id,
         TurnoCaja.estado == "ABIERTO"
     ).first()
+    if not turno:
+        raise HTTPException(400, "No tienes un turno de caja abierto para esta empresa")
 
     almacen_id = data.get("almacen_id", 1)
     items = data.get("items", [])
@@ -194,8 +206,9 @@ def crear_venta(data: dict, db: Session = Depends(get_db), user=Depends(get_curr
     subtotal = sum(i["precio_unitario_usd"] * i["cantidad"] for i in items)
     total = subtotal  # sin descuento por ahora
 
-    numero = _generar_numero_venta(db)
+    numero = _generar_numero_venta(db, empresa_id)
     venta = Venta(
+        empresa_id=empresa_id,
         numero_venta=numero,
         tipo=data.get("tipo", "RAPIDA"),
         estado="CERRADA",
@@ -251,8 +264,12 @@ def crear_venta(data: dict, db: Session = Depends(get_db), user=Depends(get_curr
 
 
 @router.post("/{venta_id}/anular")
-def anular_venta(venta_id: int, data: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    venta = db.query(Venta).filter(Venta.id == venta_id).first()
+def anular_venta(
+    venta_id: int, data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    user=Depends(get_current_user)
+):
+    venta = db.query(Venta).filter(Venta.id == venta_id, Venta.empresa_id == empresa_id).first()
     if not venta:
         raise HTTPException(404, "Venta no encontrada")
     if venta.anulada:

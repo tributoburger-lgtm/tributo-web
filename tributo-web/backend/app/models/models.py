@@ -11,6 +11,56 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 
 
+class Empresa(Base):
+    """
+    Cada negocio que corre sobre este mismo sistema (Tributo, Destilado
+    Bodegon, Comercializadora Chagoz, y cualquier otro que se agregue
+    en el futuro). Todo dato operativo (productos, ventas, caja, etc.)
+    esta marcado con a cual empresa pertenece.
+    """
+    __tablename__ = "empresas"
+    id           = Column(Integer, primary_key=True, index=True)
+    nombre       = Column(String(100), nullable=False)       # "Tributo"
+    razon_social = Column(String(150))                        # "Comercializadora Chagoz C.A."
+    rif          = Column(String(30))
+    color        = Column(String(20), default="#F5A623")      # para distinguir en el selector
+    logo_path    = Column(String(255))
+    activo       = Column(Boolean, default=True)
+    creado_en    = Column(DateTime, server_default=func.now())
+
+    modulos = relationship("EmpresaModulo", back_populates="empresa", cascade="all, delete-orphan")
+
+
+class EmpresaModulo(Base):
+    """
+    Que modulos ve cada empresa en el sidebar. Ej: Destilado no necesita
+    Restaurant, Chagoz puede necesitar un modulo de Distribucion que
+    Tributo nunca va a usar.
+    """
+    __tablename__ = "empresa_modulos"
+    id         = Column(Integer, primary_key=True)
+    empresa_id = Column(Integer, ForeignKey("empresas.id", ondelete="CASCADE"), nullable=False)
+    modulo     = Column(String(30), nullable=False)  # 'POS','RESTAURANT','INVENTARIO','CAJA','COMPRAS','CLIENTES','REPORTES','DISTRIBUCION'...
+    activo     = Column(Boolean, default=True)
+
+    empresa = relationship("Empresa", back_populates="modulos")
+    __table_args__ = (UniqueConstraint("empresa_id", "modulo"),)
+
+
+class UsuarioEmpresa(Base):
+    """
+    A que empresas tiene acceso cada usuario. Un dueño (como William)
+    tiene acceso a las 3; un cajero puede tener acceso solo a una.
+    """
+    __tablename__ = "usuario_empresa"
+    id         = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False)
+    empresa_id = Column(Integer, ForeignKey("empresas.id", ondelete="CASCADE"), nullable=False)
+    creado_en  = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("usuario_id", "empresa_id"),)
+
+
 class Usuario(Base):
     __tablename__ = "usuarios"
     id                = Column(Integer, primary_key=True, index=True)
@@ -31,30 +81,35 @@ class Usuario(Base):
 class Almacen(Base):
     __tablename__ = "almacenes"
     id          = Column(Integer, primary_key=True)
-    nombre      = Column(String(100), unique=True, nullable=False)
+    empresa_id  = Column(Integer, ForeignKey("empresas.id"), nullable=False)
+    nombre      = Column(String(100), nullable=False)
     descripcion = Column(Text)
     direccion   = Column(Text)
     es_principal = Column(Boolean, default=False)
     activo      = Column(Boolean, default=True)
     creado_en   = Column(DateTime, server_default=func.now())
+    __table_args__ = (UniqueConstraint("empresa_id", "nombre"),)
 
 
 class Categoria(Base):
     __tablename__ = "categorias"
     id          = Column(Integer, primary_key=True)
-    nombre      = Column(String(100), unique=True, nullable=False)
+    empresa_id  = Column(Integer, ForeignKey("empresas.id"), nullable=False)
+    nombre      = Column(String(100), nullable=False)
     descripcion = Column(Text)
     color       = Column(String(20), default="#4A9EFF")
     icono       = Column(String(10), default="📦")
     activo      = Column(Boolean, default=True)
     creado_en   = Column(DateTime, server_default=func.now())
     productos   = relationship("Producto", back_populates="categoria")
+    __table_args__ = (UniqueConstraint("empresa_id", "nombre"),)
 
 
 class Proveedor(Base):
     __tablename__ = "proveedores"
     id               = Column(Integer, primary_key=True)
     nombre           = Column(String(150), nullable=False)
+    empresa_id       = Column(Integer, ForeignKey("empresas.id"), nullable=False)
     rif_nit          = Column(String(30))
     contacto         = Column(String(100))
     telefono         = Column(String(30))
@@ -72,8 +127,9 @@ class Proveedor(Base):
 class Producto(Base):
     __tablename__ = "productos"
     id                    = Column(Integer, primary_key=True, index=True)
-    codigo                = Column(String(50), unique=True)
-    codigo_barras         = Column(String(50), unique=True)
+    empresa_id            = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
+    codigo                = Column(String(50))
+    codigo_barras         = Column(String(50))
     nombre                = Column(String(150), nullable=False, index=True)
     descripcion           = Column(Text)
     categoria_id          = Column(Integer, ForeignKey("categorias.id", ondelete="SET NULL"))
@@ -101,6 +157,11 @@ class Producto(Base):
     categoria  = relationship("Categoria", back_populates="productos")
     variantes  = relationship("ProductoVariante", back_populates="producto", cascade="all, delete-orphan")
     receta     = relationship("Receta", back_populates="producto", uselist=False)
+
+    __table_args__ = (
+        UniqueConstraint("empresa_id", "codigo", name="uq_producto_empresa_codigo"),
+        UniqueConstraint("empresa_id", "codigo_barras", name="uq_producto_empresa_barras"),
+    )
 
 
 class ProductoVariante(Base):
@@ -153,7 +214,8 @@ class Cliente(Base):
     __tablename__ = "clientes"
     id                 = Column(Integer, primary_key=True, index=True)
     nombre             = Column(String(150), nullable=False)
-    rif_cedula         = Column(String(30), unique=True)
+    empresa_id         = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
+    rif_cedula         = Column(String(30))
     telefono           = Column(String(30))
     email              = Column(String(100))
     direccion          = Column(Text)
@@ -167,12 +229,14 @@ class Cliente(Base):
     activo             = Column(Boolean, default=True)
     creado_en          = Column(DateTime, server_default=func.now())
     actualizado_en     = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (UniqueConstraint("empresa_id", "rif_cedula", name="uq_cliente_empresa_rif"),)
 
 
 class Venta(Base):
     __tablename__ = "ventas"
     id                  = Column(Integer, primary_key=True, index=True)
-    numero_venta        = Column(String(50), unique=True, nullable=False, index=True)
+    numero_venta        = Column(String(50), nullable=False, index=True)
+    empresa_id          = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     tipo                = Column(String(20), default="RAPIDA")
     estado              = Column(String(20), default="ABIERTA")
     cliente_id          = Column(Integer, ForeignKey("clientes.id", ondelete="SET NULL"))
@@ -203,6 +267,7 @@ class Venta(Base):
 
     detalles = relationship("DetalleVenta", back_populates="venta", cascade="all, delete-orphan")
     pagos    = relationship("PagoVenta", back_populates="venta", cascade="all, delete-orphan")
+    __table_args__ = (UniqueConstraint("empresa_id", "numero_venta", name="uq_venta_empresa_numero"),)
 
 
 class DetalleVenta(Base):
@@ -256,6 +321,7 @@ class TurnoCaja(Base):
     __tablename__ = "turnos_caja"
     id                  = Column(Integer, primary_key=True)
     usuario_id          = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+    empresa_id          = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     almacen_id          = Column(Integer, ForeignKey("almacenes.id"), nullable=False)
     fondo_inicial_usd   = Column(Float, default=0)
     fondo_inicial_ves   = Column(Float, default=0)
@@ -274,6 +340,7 @@ class TurnoCaja(Base):
 class EgresoCaja(Base):
     __tablename__ = "egresos_caja"
     id           = Column(Integer, primary_key=True)
+    empresa_id   = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     turno_id     = Column(Integer, ForeignKey("turnos_caja.id"))
     usuario_id   = Column(Integer, ForeignKey("usuarios.id"))
     categoria    = Column(String(30), default="GASTO")
@@ -291,6 +358,7 @@ class EgresoCaja(Base):
 class IngresoCaja(Base):
     __tablename__ = "ingresos_caja"
     id           = Column(Integer, primary_key=True)
+    empresa_id   = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     turno_id     = Column(Integer, ForeignKey("turnos_caja.id"))
     usuario_id   = Column(Integer, ForeignKey("usuarios.id"))
     categoria    = Column(String(30), default="OTRO")
@@ -338,7 +406,8 @@ class MovimientoInventario(Base):
 class Mesa(Base):
     __tablename__ = "mesas"
     id             = Column(Integer, primary_key=True)
-    numero         = Column(Integer, unique=True, nullable=False)
+    numero         = Column(Integer, nullable=False)
+    empresa_id     = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     nombre         = Column(String(50))
     capacidad      = Column(Integer, default=4)
     estado         = Column(String(20), default="LIBRE")
@@ -346,12 +415,14 @@ class Mesa(Base):
     activo         = Column(Boolean, default=True)
     venta_activa_id = Column(Integer)
     creado_en      = Column(DateTime, server_default=func.now())
+    __table_args__ = (UniqueConstraint("empresa_id", "numero", name="uq_mesa_empresa_numero"),)
 
 
 class Compra(Base):
     __tablename__ = "compras"
     id            = Column(Integer, primary_key=True)
-    numero_compra = Column(String(50), unique=True, nullable=False)
+    numero_compra = Column(String(50), nullable=False)
+    empresa_id    = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     proveedor_id  = Column(Integer, ForeignKey("proveedores.id"))
     usuario_id    = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
     almacen_id    = Column(Integer, ForeignKey("almacenes.id"), nullable=False)
@@ -365,6 +436,7 @@ class Compra(Base):
     notas         = Column(Text)
 
     detalles = relationship("DetalleCompra", back_populates="compra", cascade="all, delete-orphan")
+    __table_args__ = (UniqueConstraint("empresa_id", "numero_compra", name="uq_compra_empresa_numero"),)
 
 
 class DetalleCompra(Base):
@@ -386,6 +458,7 @@ class TasaCambio(Base):
     __tablename__ = "tasas_de_cambio"
     id              = Column(Integer, primary_key=True)
     moneda_origen   = Column(String(5), nullable=False)
+    empresa_id      = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     moneda_destino  = Column(String(5), nullable=False)
     tasa            = Column(Float, nullable=False)
     fuente          = Column(String(20), default="MANUAL")
@@ -399,6 +472,7 @@ class Merma(Base):
     __tablename__ = "mermas"
     id          = Column(Integer, primary_key=True)
     producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    empresa_id  = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
     cantidad    = Column(Float, nullable=False)
     motivo      = Column(String(100), default="Otro")
     costo_usd   = Column(Float, default=0)
