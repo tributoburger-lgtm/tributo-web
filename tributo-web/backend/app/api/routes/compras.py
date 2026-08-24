@@ -168,6 +168,43 @@ def crear_compra(
     return {"id": compra.id, "numero_compra": numero, "total_usd": subtotal}
 
 
+@router.post("/{compra_id}/anular")
+def anular_compra(
+    compra_id: int, data: dict = {}, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    user=Depends(get_current_user)
+):
+    """
+    Anula una compra y revierte SOLO lo que realmente se recibio
+    (no lo que se pidio) — igual que en SAPOS Desktop. Se puede
+    anular en cualquier estado excepto si ya esta cancelada.
+    """
+    compra = db.query(Compra).options(joinedload(Compra.detalles)).filter(
+        Compra.id == compra_id, Compra.empresa_id == empresa_id
+    ).first()
+    if not compra:
+        raise HTTPException(404, "Compra no encontrada")
+    if compra.estado == "CANCELADA":
+        raise HTTPException(400, "Esta compra ya está anulada")
+
+    for detalle in compra.detalles:
+        recibido = detalle.cantidad_recibida or 0
+        if recibido <= 0:
+            continue
+        producto = db.query(Producto).filter(Producto.id == detalle.producto_id).first()
+        if not producto or not producto.tiene_inventario:
+            continue
+        _ajustar_stock(
+            db, detalle.producto_id, -recibido, "AJUSTE", user.id,
+            compra.almacen_id, "ANULACION_COMPRA", compra.id
+        )
+
+    compra.estado = "CANCELADA"
+    compra.notas = (compra.notas or "") + f"\nAnulada: {data.get('motivo', 'Sin motivo')}"
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/{compra_id}/recibir")
 def recibir_compra(
     compra_id: int, data: dict = {}, db: Session = Depends(get_db),
@@ -187,6 +224,8 @@ def recibir_compra(
         raise HTTPException(404, "Compra no encontrada")
     if compra.estado == "RECIBIDA":
         raise HTTPException(400, "Esta compra ya fue recibida")
+    if compra.estado == "CANCELADA":
+        raise HTTPException(400, "Esta compra fue anulada, no se puede recibir")
 
     parciales = {i["detalle_id"]: i["cantidad_recibida"] for i in data.get("items", [])}
 
