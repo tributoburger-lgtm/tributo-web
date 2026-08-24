@@ -8,7 +8,7 @@ from app.api.routes.auth import get_current_user, get_empresa_actual
 from app.models.models import (
     Venta, DetalleVenta, PagoVenta, Producto, ProductoVariante,
     Inventario, MovimientoInventario, Receta, DetalleReceta,
-    VarianteIngredientes, TurnoCaja
+    VarianteIngredientes, TurnoCaja, LoteInventario
 )
 
 router = APIRouter()
@@ -85,8 +85,21 @@ def _descontar_inventario(db, producto_id, variante_id, cantidad, usuario_id, al
     return costo_total
 
 
-def _ajustar_stock(db, producto_id, delta, tipo, usuario_id, almacen_id, ref_tipo, ref_id) -> float:
-    """Ajusta stock FIFO y registra movimiento. Retorna costo unitario."""
+def _ajustar_stock(db, producto_id, delta, tipo, usuario_id, almacen_id, ref_tipo, ref_id,
+                    costo_unitario_usd=None) -> float:
+    """
+    Ajusta stock con FIFO real (por lotes) y registra el movimiento.
+    Retorna el costo TOTAL del movimiento (costo unitario real x cantidad).
+
+    - Si delta > 0 (entrada): crea un lote nuevo con costo_unitario_usd
+      (el costo real de esa compra/entrada). Si no se pasa, usa el
+      precio_costo_usd del producto como respaldo.
+    - Si delta < 0 (salida): consume los lotes mas viejos primero
+      (FIFO). El costo de la salida es el costo real de esos lotes,
+      no un precio generico. Si los lotes no alcanzan a cubrir toda
+      la cantidad (stock que ya venia negativo), la parte restante se
+      valora al precio_costo_usd del producto como respaldo.
+    """
     inv = db.query(Inventario).filter(
         Inventario.producto_id == producto_id,
         Inventario.almacen_id == almacen_id,
@@ -103,14 +116,48 @@ def _ajustar_stock(db, producto_id, delta, tipo, usuario_id, almacen_id, ref_tip
         else:
             inv.ultima_salida = datetime.now()
     else:
-        inv = Inventario(
-            producto_id=producto_id, almacen_id=almacen_id,
-            cantidad=despues
-        )
+        inv = Inventario(producto_id=producto_id, almacen_id=almacen_id, cantidad=despues)
         db.add(inv)
 
     prod = db.query(Producto).filter(Producto.id == producto_id).first()
-    costo = prod.precio_costo_usd if prod else 0
+    empresa_id = prod.empresa_id if prod else None
+    precio_respaldo = prod.precio_costo_usd if prod else 0
+
+    if delta > 0:
+        # ENTRADA: nace un lote nuevo con su costo real
+        costo_unit = costo_unitario_usd if costo_unitario_usd is not None else precio_respaldo
+        db.add(LoteInventario(
+            empresa_id=empresa_id, producto_id=producto_id, almacen_id=almacen_id,
+            cantidad_inicial=delta, cantidad_disponible=delta,
+            costo_unitario_usd=costo_unit,
+            referencia_tipo=ref_tipo, referencia_id=ref_id
+        ))
+        costo_total = costo_unit * delta
+        costo_unitario_mov = costo_unit
+    else:
+        # SALIDA: consumir de los lotes mas viejos primero (FIFO)
+        cantidad_necesaria = abs(delta)
+        costo_total = 0.0
+        lotes = db.query(LoteInventario).filter(
+            LoteInventario.producto_id == producto_id,
+            LoteInventario.almacen_id == almacen_id,
+            LoteInventario.cantidad_disponible > 0
+        ).order_by(LoteInventario.fecha_entrada.asc()).all()
+
+        for lote in lotes:
+            if cantidad_necesaria <= 0:
+                break
+            tomar = min(lote.cantidad_disponible, cantidad_necesaria)
+            lote.cantidad_disponible -= tomar
+            costo_total += tomar * lote.costo_unitario_usd
+            cantidad_necesaria -= tomar
+
+        if cantidad_necesaria > 0:
+            # Los lotes no alcanzaron (stock ya venia en negativo) —
+            # el resto se valora al precio de respaldo del producto
+            costo_total += cantidad_necesaria * precio_respaldo
+
+        costo_unitario_mov = (costo_total / abs(delta)) if delta != 0 else 0
 
     mov = MovimientoInventario(
         producto_id=producto_id,
@@ -121,11 +168,11 @@ def _ajustar_stock(db, producto_id, delta, tipo, usuario_id, almacen_id, ref_tip
         cantidad_despues=despues,
         referencia_tipo=ref_tipo,
         referencia_id=ref_id,
-        costo_usd=costo,
+        costo_usd=costo_unitario_mov,
         usuario_id=usuario_id
     )
     db.add(mov)
-    return costo * abs(delta)
+    return costo_total
 
 
 @router.get("/")

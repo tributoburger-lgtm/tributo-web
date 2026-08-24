@@ -197,7 +197,8 @@ def recibir_compra(
             continue
         _ajustar_stock(
             db, detalle.producto_id, cantidad_a_recibir, "ENTRADA",
-            user.id, compra.almacen_id, "COMPRA", compra.id
+            user.id, compra.almacen_id, "COMPRA", compra.id,
+            costo_unitario_usd=detalle.precio_unitario_usd
         )
         detalle.cantidad_recibida = (detalle.cantidad_recibida or 0) + cantidad_a_recibir
 

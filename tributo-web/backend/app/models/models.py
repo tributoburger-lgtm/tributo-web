@@ -11,6 +11,26 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 
 
+class LoteInventario(Base):
+    """
+    Cada entrada de stock (compra recibida, ajuste, etc.) crea un lote
+    con SU costo real. Al salir stock (venta, merma), se consume de los
+    lotes mas viejos primero (FIFO real) y el costo de la salida es el
+    costo real de esos lotes, no un precio fijo generico del producto.
+    """
+    __tablename__ = "lotes_inventario"
+    id                  = Column(Integer, primary_key=True)
+    empresa_id          = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
+    producto_id         = Column(Integer, ForeignKey("productos.id"), nullable=False, index=True)
+    almacen_id          = Column(Integer, ForeignKey("almacenes.id"), nullable=False)
+    cantidad_inicial    = Column(Float, nullable=False)
+    cantidad_disponible = Column(Float, nullable=False)
+    costo_unitario_usd  = Column(Float, nullable=False)
+    fecha_entrada       = Column(DateTime, server_default=func.now(), index=True)
+    referencia_tipo     = Column(String(30))
+    referencia_id       = Column(Integer)
+
+
 class Empresa(Base):
     """
     Cada negocio que corre sobre este mismo sistema (Tributo, Destilado
