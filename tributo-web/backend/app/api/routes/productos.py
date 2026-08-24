@@ -125,6 +125,74 @@ def listar_categorias(
     empresa_id: int = Depends(get_empresa_actual),
     _=Depends(get_current_user)
 ):
-    return db.query(Categoria).filter(
+    cats = db.query(Categoria).filter(
         Categoria.activo == True, Categoria.empresa_id == empresa_id
     ).order_by(Categoria.nombre).all()
+    return [
+        {"id": c.id, "nombre": c.nombre, "descripcion": c.descripcion,
+         "color": c.color, "icono": c.icono}
+        for c in cats
+    ]
+
+
+@router.post("/categorias")
+def crear_categoria(
+    data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    if not data.get("nombre"):
+        raise HTTPException(400, "El nombre es obligatorio")
+    existente = db.query(Categoria).filter(
+        Categoria.empresa_id == empresa_id, Categoria.nombre == data["nombre"]
+    ).first()
+    if existente:
+        raise HTTPException(400, "Ya existe una categoría con ese nombre")
+    c = Categoria(
+        empresa_id=empresa_id, nombre=data["nombre"],
+        descripcion=data.get("descripcion"),
+        color=data.get("color", "#4A9EFF"), icono=data.get("icono", "📦"),
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return {"id": c.id, "nombre": c.nombre}
+
+
+@router.put("/categorias/{categoria_id}")
+def actualizar_categoria(
+    categoria_id: int, data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    c = db.query(Categoria).filter(
+        Categoria.id == categoria_id, Categoria.empresa_id == empresa_id
+    ).first()
+    if not c:
+        raise HTTPException(404, "Categoría no encontrada")
+    for k, v in data.items():
+        if hasattr(c, k) and k not in ("id", "empresa_id"):
+            setattr(c, k, v)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/categorias/{categoria_id}")
+def eliminar_categoria(
+    categoria_id: int, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    c = db.query(Categoria).filter(
+        Categoria.id == categoria_id, Categoria.empresa_id == empresa_id
+    ).first()
+    if not c:
+        raise HTTPException(404, "Categoría no encontrada")
+    en_uso = db.query(Producto).filter(
+        Producto.categoria_id == categoria_id, Producto.activo == True
+    ).count()
+    if en_uso > 0:
+        raise HTTPException(400, f"No se puede eliminar: {en_uso} producto(s) todavía la usan")
+    c.activo = False
+    db.commit()
+    return {"ok": True}

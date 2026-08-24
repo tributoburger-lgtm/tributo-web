@@ -31,6 +31,28 @@ class LoteInventario(Base):
     referencia_id       = Column(Integer)
 
 
+class Fraccionamiento(Base):
+    """
+    Convertir una presentacion grande en unidades mas chicas (ej: una
+    caja de 24 huevos -> 24 huevos sueltos). El costo real (FIFO) que
+    se consume del producto origen se reparte entre las unidades del
+    producto destino, para no perder precision de costos.
+    """
+    __tablename__ = "fraccionamientos_web"
+    id                  = Column(Integer, primary_key=True)
+    empresa_id          = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
+    producto_origen_id  = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    cantidad_origen     = Column(Float, nullable=False)
+    producto_destino_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    cantidad_destino    = Column(Float, nullable=False)
+    costo_total_usd     = Column(Float, default=0)
+    usuario_id          = Column(Integer, ForeignKey("usuarios.id"))
+    almacen_id          = Column(Integer, ForeignKey("almacenes.id"), nullable=False)
+    notas               = Column(Text)
+    fecha               = Column(DateTime, server_default=func.now())
+    revertido           = Column(Boolean, default=False)
+
+
 class Empresa(Base):
     """
     Cada negocio que corre sobre este mismo sistema (Tributo, Destilado
