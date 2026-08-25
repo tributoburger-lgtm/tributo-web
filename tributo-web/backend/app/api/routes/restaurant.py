@@ -8,6 +8,167 @@ from app.models.models import Mesa, Venta, DetalleVenta, PagoVenta
 
 router = APIRouter()
 
+# ---------- Pedidos para llevar ----------
+# Reutilizan la tabla de Ventas (tipo='LLEVAR'), con un flujo de estados
+# propio: PENDIENTE -> EN_PREPARACION -> LISTO -> CERRADA (al cobrar).
+# No necesitan mesa ni migracion de base de datos nueva.
+
+PEDIDO_ESTADOS = ["PENDIENTE", "EN_PREPARACION", "LISTO"]
+
+
+@router.get("/pedidos")
+def listar_pedidos(
+    incluir_cerrados: bool = False,
+    db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    q = db.query(Venta).filter(Venta.empresa_id == empresa_id, Venta.tipo == "LLEVAR")
+    if not incluir_cerrados:
+        q = q.filter(Venta.estado.in_(PEDIDO_ESTADOS))
+    ventas = q.order_by(Venta.fecha_venta.desc()).limit(100).all()
+    return [
+        {
+            "id": v.id, "numero_venta": v.numero_venta, "estado": v.estado,
+            "total_usd": v.total_usd, "notas": v.notas, "fecha_venta": v.fecha_venta,
+        }
+        for v in ventas
+    ]
+
+
+@router.post("/pedidos")
+def crear_pedido(
+    data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    user=Depends(get_current_user)
+):
+    """
+    data = {
+        "cliente_nombre": "Juan", "telefono": "0414...",
+        "items": [{"producto_id": 1, "variante_id": null, "cantidad": 2,
+                   "precio_unitario_usd": 5.0, "nombre": "Clasica"}],
+        "almacen_id": 1
+    }
+    Descuenta inventario de inmediato (igual que una comanda de mesa).
+    """
+    items = data.get("items", [])
+    if not items:
+        raise HTTPException(400, "El pedido necesita al menos un item")
+
+    almacen_id = data.get("almacen_id", 1)
+    subtotal = sum(i["precio_unitario_usd"] * i["cantidad"] for i in items)
+    numero = _generar_numero_venta(db, empresa_id)
+
+    nombre_cliente = data.get("cliente_nombre", "").strip()
+    telefono = data.get("telefono", "").strip()
+    notas = f"Cliente: {nombre_cliente or 'Sin nombre'}" + (f" · Tel: {telefono}" if telefono else "")
+
+    venta = Venta(
+        empresa_id=empresa_id, numero_venta=numero, tipo="LLEVAR", estado="PENDIENTE",
+        usuario_id=user.id, almacen_id=almacen_id, moneda_display="USD",
+        subtotal_usd=subtotal, total_usd=subtotal, notas=notas,
+        fecha_venta=datetime.now()
+    )
+    db.add(venta)
+    db.flush()
+
+    for item in items:
+        db.add(DetalleVenta(
+            venta_id=venta.id, producto_id=item["producto_id"], variante_id=item.get("variante_id"),
+            cantidad=item["cantidad"], precio_unitario_usd=item["precio_unitario_usd"],
+            subtotal_usd=item["precio_unitario_usd"] * item["cantidad"],
+            total_usd=item["precio_unitario_usd"] * item["cantidad"],
+            moneda_display="USD", precio_display=item["precio_unitario_usd"], tasa_usada=1.0,
+            nombre_producto=item.get("nombre", ""),
+        ))
+        _descontar_inventario(db, item["producto_id"], item.get("variante_id"),
+                               item["cantidad"], user.id, almacen_id, venta.id)
+
+    db.commit()
+    return {"id": venta.id, "numero_venta": numero}
+
+
+@router.put("/pedidos/{venta_id}/estado")
+def cambiar_estado_pedido(
+    venta_id: int, data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    nuevo_estado = data.get("estado")
+    if nuevo_estado not in PEDIDO_ESTADOS:
+        raise HTTPException(400, f"Estado inválido, debe ser uno de: {PEDIDO_ESTADOS}")
+    venta = db.query(Venta).filter(
+        Venta.id == venta_id, Venta.empresa_id == empresa_id, Venta.tipo == "LLEVAR"
+    ).first()
+    if not venta:
+        raise HTTPException(404, "Pedido no encontrado")
+    venta.estado = nuevo_estado
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/pedidos/{venta_id}/cobrar")
+def cobrar_pedido(
+    venta_id: int, data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    user=Depends(get_current_user)
+):
+    venta = db.query(Venta).filter(
+        Venta.id == venta_id, Venta.empresa_id == empresa_id, Venta.tipo == "LLEVAR"
+    ).first()
+    if not venta:
+        raise HTTPException(404, "Pedido no encontrado")
+    if venta.estado not in PEDIDO_ESTADOS:
+        raise HTTPException(400, "Este pedido ya fue cobrado o anulado")
+
+    pagos = data.get("pagos", [])
+    if not pagos:
+        raise HTTPException(400, "Debe indicar al menos un método de pago")
+
+    for pago in pagos:
+        db.add(PagoVenta(
+            venta_id=venta.id, metodo_pago=pago["metodo_pago"], moneda=pago["moneda"],
+            monto=pago["monto"], monto_usd=pago["monto_usd"], tasa_usada=pago.get("tasa_usada", 1.0)
+        ))
+
+    venta.total_pagado_usd = sum(p["monto_usd"] for p in pagos)
+    venta.tasa_ves = data.get("tasa_ves")
+    venta.tasa_cop = data.get("tasa_cop")
+    venta.estado = "CERRADA"
+    venta.cerrada_en = datetime.now()
+    db.commit()
+    return {"ok": True, "venta_id": venta.id}
+
+
+@router.post("/pedidos/{venta_id}/anular")
+def anular_pedido(
+    venta_id: int, data: dict = {}, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    user=Depends(get_current_user)
+):
+    venta = db.query(Venta).options(joinedload(Venta.detalles)).filter(
+        Venta.id == venta_id, Venta.empresa_id == empresa_id, Venta.tipo == "LLEVAR"
+    ).first()
+    if not venta:
+        raise HTTPException(404, "Pedido no encontrado")
+    if venta.estado not in PEDIDO_ESTADOS:
+        raise HTTPException(400, "Este pedido ya está cerrado")
+
+    for dv in venta.detalles:
+        _descontar_inventario(db, dv.producto_id, dv.variante_id, -dv.cantidad,
+                               user.id, venta.almacen_id, venta.id)
+
+    venta.anulada = True
+    venta.anulada_por = user.id
+    venta.motivo_anulacion = data.get("motivo", "Pedido cancelado")
+    venta.anulada_en = datetime.now()
+    venta.estado = "ANULADA"
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- Mesas ----------
+
 
 @router.get("/mesas")
 def listar_mesas(
