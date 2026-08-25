@@ -21,6 +21,28 @@ def _generar_numero_venta(db: Session, empresa_id: int) -> str:
     return f"SAPOS-{ahora.strftime('%Y%m%d')}-{str(count+1).zfill(6)}"
 
 
+def _procesar_extras(db, extra_ids, cantidad_item, usuario_id, almacen_id, venta_id):
+    """
+    Calcula el precio de los extras elegidos y descuenta inventario del
+    ingrediente ligado a cada uno (si tiene). Retorna (precio_total, ids_procesados).
+    """
+    if not extra_ids:
+        return 0.0, []
+    from app.models.models import Extra
+    precio_total = 0.0
+    nombres = []
+    for extra_id in extra_ids:
+        extra = db.query(Extra).filter(Extra.id == extra_id, Extra.activo == True).first()
+        if not extra:
+            continue
+        precio_total += (extra.precio_usd or 0) * cantidad_item
+        nombres.append(extra.nombre)
+        if extra.ingrediente_id:
+            _ajustar_stock(db, extra.ingrediente_id, -cantidad_item, "SALIDA",
+                            usuario_id, almacen_id, "EXTRA", venta_id)
+    return precio_total, nombres
+
+
 def _descontar_inventario(db, producto_id, variante_id, cantidad, usuario_id, almacen_id, venta_id):
     """Descuenta inventario usando receta si aplica."""
     prod = db.query(Producto).filter(Producto.id == producto_id).first()
@@ -287,10 +309,6 @@ def crear_venta(
     items = data.get("items", [])
     pagos = data.get("pagos", [])
 
-    # Calcular totales
-    subtotal = sum(i["precio_unitario_usd"] * i["cantidad"] for i in items)
-    total = subtotal  # sin descuento por ahora
-
     numero = _generar_numero_venta(db, empresa_id)
     venta = Venta(
         empresa_id=empresa_id,
@@ -302,8 +320,6 @@ def crear_venta(
         mesa_id=data.get("mesa_id"),
         almacen_id=almacen_id,
         moneda_display=data.get("moneda_display", "USD"),
-        subtotal_usd=subtotal,
-        total_usd=total,
         total_pagado_usd=sum(p["monto_usd"] for p in pagos),
         tasa_ves=data.get("tasa_ves"),
         tasa_cop=data.get("tasa_cop"),
@@ -312,26 +328,36 @@ def crear_venta(
     db.add(venta)
     db.flush()  # para obtener venta.id
 
-    # Insertar detalles y descontar inventario
+    # Insertar detalles, procesar extras y descontar inventario
+    subtotal = 0.0
     for item in items:
+        extras_precio, extras_nombres = _procesar_extras(
+            db, item.get("extras", []), item["cantidad"], user.id, almacen_id, venta.id
+        )
+        linea_total = item["precio_unitario_usd"] * item["cantidad"] + extras_precio
+        subtotal += linea_total
+
         dv = DetalleVenta(
             venta_id=venta.id,
             producto_id=item["producto_id"],
             variante_id=item.get("variante_id"),
             cantidad=item["cantidad"],
             precio_unitario_usd=item["precio_unitario_usd"],
-            subtotal_usd=item["precio_unitario_usd"] * item["cantidad"],
-            total_usd=item["precio_unitario_usd"] * item["cantidad"],
+            subtotal_usd=linea_total,
+            total_usd=linea_total,
             moneda_display=data.get("moneda_display", "USD"),
             precio_display=item["precio_unitario_usd"],
             tasa_usada=1.0,
             nombre_producto=item.get("nombre", ""),
-            extras_json=item.get("extras_json"),
-            extras_precio_usd=item.get("extras_precio_usd", 0)
+            extras_json=(", ".join(extras_nombres) if extras_nombres else None),
+            extras_precio_usd=extras_precio,
         )
         db.add(dv)
         _descontar_inventario(db, item["producto_id"], item.get("variante_id"),
                                item["cantidad"], user.id, almacen_id, venta.id)
+
+    venta.subtotal_usd = subtotal
+    venta.total_usd = subtotal  # sin descuento por ahora
 
     # Insertar pagos
     for pago in pagos:
@@ -345,7 +371,7 @@ def crear_venta(
         ))
 
     db.commit()
-    return {"id": venta.id, "numero_venta": numero, "total_usd": total}
+    return {"id": venta.id, "numero_venta": numero, "total_usd": venta.total_usd}
 
 
 @router.post("/{venta_id}/anular")

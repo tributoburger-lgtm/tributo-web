@@ -11,6 +11,31 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 
 
+class Extra(Base):
+    """
+    Catalogo de adicionales/extras que se pueden agregar a un producto
+    al venderlo (ej: "Extra Tocineta +$1.50"). Si se liga a un
+    ingrediente (producto con inventario), vender el extra descuenta
+    stock real de ese ingrediente.
+    """
+    __tablename__ = "extras"
+    id             = Column(Integer, primary_key=True)
+    empresa_id     = Column(Integer, ForeignKey("empresas.id"), nullable=False, index=True)
+    nombre         = Column(String(100), nullable=False)
+    precio_usd     = Column(Float, default=0)
+    ingrediente_id = Column(Integer, ForeignKey("productos.id"))
+    activo         = Column(Boolean, default=True)
+
+
+class ProductoExtra(Base):
+    """A que productos se les puede agregar cada extra."""
+    __tablename__ = "producto_extras"
+    id          = Column(Integer, primary_key=True)
+    producto_id = Column(Integer, ForeignKey("productos.id", ondelete="CASCADE"), nullable=False)
+    extra_id    = Column(Integer, ForeignKey("extras.id", ondelete="CASCADE"), nullable=False)
+    __table_args__ = (UniqueConstraint("producto_id", "extra_id"),)
+
+
 class LoteInventario(Base):
     """
     Cada entrada de stock (compra recibida, ajuste, etc.) crea un lote

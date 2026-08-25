@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 from app.core.database import get_db
 from app.api.routes.auth import get_current_user, get_empresa_actual
-from app.api.routes.ventas import _descontar_inventario, _generar_numero_venta
+from app.api.routes.ventas import _descontar_inventario, _generar_numero_venta, _procesar_extras
 from app.models.models import Mesa, Venta, DetalleVenta, PagoVenta
 
 router = APIRouter()
@@ -56,7 +56,6 @@ def crear_pedido(
         raise HTTPException(400, "El pedido necesita al menos un item")
 
     almacen_id = data.get("almacen_id", 1)
-    subtotal = sum(i["precio_unitario_usd"] * i["cantidad"] for i in items)
     numero = _generar_numero_venta(db, empresa_id)
 
     nombre_cliente = data.get("cliente_nombre", "").strip()
@@ -66,23 +65,32 @@ def crear_pedido(
     venta = Venta(
         empresa_id=empresa_id, numero_venta=numero, tipo="LLEVAR", estado="PENDIENTE",
         usuario_id=user.id, almacen_id=almacen_id, moneda_display="USD",
-        subtotal_usd=subtotal, total_usd=subtotal, notas=notas,
-        fecha_venta=datetime.now()
+        notas=notas, fecha_venta=datetime.now()
     )
     db.add(venta)
     db.flush()
 
+    subtotal = 0.0
     for item in items:
+        extras_precio, extras_nombres = _procesar_extras(
+            db, item.get("extras", []), item["cantidad"], user.id, almacen_id, venta.id
+        )
+        linea_total = item["precio_unitario_usd"] * item["cantidad"] + extras_precio
+        subtotal += linea_total
         db.add(DetalleVenta(
             venta_id=venta.id, producto_id=item["producto_id"], variante_id=item.get("variante_id"),
             cantidad=item["cantidad"], precio_unitario_usd=item["precio_unitario_usd"],
-            subtotal_usd=item["precio_unitario_usd"] * item["cantidad"],
-            total_usd=item["precio_unitario_usd"] * item["cantidad"],
+            subtotal_usd=linea_total, total_usd=linea_total,
             moneda_display="USD", precio_display=item["precio_unitario_usd"], tasa_usada=1.0,
             nombre_producto=item.get("nombre", ""),
+            extras_json=(", ".join(extras_nombres) if extras_nombres else None),
+            extras_precio_usd=extras_precio,
         ))
         _descontar_inventario(db, item["producto_id"], item.get("variante_id"),
                                item["cantidad"], user.id, almacen_id, venta.id)
+
+    venta.subtotal_usd = subtotal
+    venta.total_usd = subtotal
 
     db.commit()
     return {"id": venta.id, "numero_venta": numero}
@@ -291,19 +299,25 @@ def agregar_items(
     items = data.get("items", [])
     for item in items:
         nombre_variante = item.get("nombre_variante")
+        extras_precio, extras_nombres = _procesar_extras(
+            db, item.get("extras", []), item["cantidad"], user.id, venta.almacen_id, venta.id
+        )
+        linea_total = item["precio_unitario_usd"] * item["cantidad"] + extras_precio
         dv = DetalleVenta(
             venta_id=venta.id,
             producto_id=item["producto_id"],
             variante_id=item.get("variante_id"),
             cantidad=item["cantidad"],
             precio_unitario_usd=item["precio_unitario_usd"],
-            subtotal_usd=item["precio_unitario_usd"] * item["cantidad"],
-            total_usd=item["precio_unitario_usd"] * item["cantidad"],
+            subtotal_usd=linea_total,
+            total_usd=linea_total,
             moneda_display=venta.moneda_display,
             precio_display=item["precio_unitario_usd"],
             tasa_usada=1.0,
             nombre_producto=item.get("nombre", ""),
-            nombre_variante=nombre_variante
+            nombre_variante=nombre_variante,
+            extras_json=(", ".join(extras_nombres) if extras_nombres else None),
+            extras_precio_usd=extras_precio,
         )
         db.add(dv)
         _descontar_inventario(db, item["producto_id"], item.get("variante_id"),
