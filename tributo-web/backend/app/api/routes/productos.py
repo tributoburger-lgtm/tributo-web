@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from app.core.database import get_db
 from app.api.routes.auth import get_current_user, get_empresa_actual
-from app.models.models import Producto, ProductoVariante, Categoria, Inventario
+from app.models.models import Producto, ProductoVariante, Categoria, Inventario, Extra, ProductoExtra, VarianteIngredientes
 
 router = APIRouter()
 
@@ -32,6 +32,16 @@ def listar_productos(
         q = q.filter(Producto.nombre.ilike(f"%{search}%"))
 
     productos = q.order_by(Producto.nombre).all()
+
+    # Extras asignados por producto (un solo query para todos, evita N+1)
+    extras_por_producto = {}
+    filas_extras = db.query(ProductoExtra, Extra).join(
+        Extra, ProductoExtra.extra_id == Extra.id
+    ).filter(Extra.empresa_id == empresa_id, Extra.activo == True).all()
+    for pe, ex in filas_extras:
+        extras_por_producto.setdefault(pe.producto_id, []).append(
+            {"id": ex.id, "nombre": ex.nombre, "precio_usd": ex.precio_usd}
+        )
 
     result = []
     for p in productos:
@@ -69,7 +79,8 @@ def listar_productos(
                     "activo": v.activo
                 }
                 for v in p.variantes if v.activo
-            ]
+            ],
+            "extras": extras_por_producto.get(p.id, []),
         })
     return result
 
@@ -194,5 +205,139 @@ def eliminar_categoria(
     if en_uso > 0:
         raise HTTPException(400, f"No se puede eliminar: {en_uso} producto(s) todavía la usan")
     c.activo = False
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- Extras / Adicionales ----------
+
+@router.get("/extras/lista")
+def listar_extras(
+    db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    extras = db.query(Extra).filter(Extra.empresa_id == empresa_id, Extra.activo == True).order_by(Extra.nombre).all()
+    return [
+        {"id": e.id, "nombre": e.nombre, "precio_usd": e.precio_usd, "ingrediente_id": e.ingrediente_id}
+        for e in extras
+    ]
+
+
+@router.post("/extras")
+def crear_extra(
+    data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    if not data.get("nombre"):
+        raise HTTPException(400, "El nombre es obligatorio")
+    e = Extra(
+        empresa_id=empresa_id, nombre=data["nombre"],
+        precio_usd=data.get("precio_usd", 0), ingrediente_id=data.get("ingrediente_id"),
+    )
+    db.add(e)
+    db.commit()
+    db.refresh(e)
+    return {"id": e.id, "nombre": e.nombre}
+
+
+@router.delete("/extras/{extra_id}")
+def eliminar_extra(
+    extra_id: int, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    e = db.query(Extra).filter(Extra.id == extra_id, Extra.empresa_id == empresa_id).first()
+    if not e:
+        raise HTTPException(404, "Extra no encontrado")
+    e.activo = False
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/{producto_id}/extras/{extra_id}")
+def asignar_extra(
+    producto_id: int, extra_id: int, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    prod = db.query(Producto).filter(Producto.id == producto_id, Producto.empresa_id == empresa_id).first()
+    extra = db.query(Extra).filter(Extra.id == extra_id, Extra.empresa_id == empresa_id).first()
+    if not prod or not extra:
+        raise HTTPException(404, "Producto o extra no encontrado")
+    existente = db.query(ProductoExtra).filter(
+        ProductoExtra.producto_id == producto_id, ProductoExtra.extra_id == extra_id
+    ).first()
+    if existente:
+        return {"ok": True}
+    db.add(ProductoExtra(producto_id=producto_id, extra_id=extra_id))
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{producto_id}/extras/{extra_id}")
+def quitar_extra(
+    producto_id: int, extra_id: int, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    pe = db.query(ProductoExtra).join(Producto).filter(
+        ProductoExtra.producto_id == producto_id, ProductoExtra.extra_id == extra_id,
+        Producto.empresa_id == empresa_id
+    ).first()
+    if pe:
+        db.delete(pe)
+        db.commit()
+    return {"ok": True}
+
+
+# ---------- Ingredientes por variante ----------
+
+@router.get("/variantes/{variante_id}/ingredientes")
+def listar_ingredientes_variante(
+    variante_id: int, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    variante = db.query(ProductoVariante).join(Producto).filter(
+        ProductoVariante.id == variante_id, Producto.empresa_id == empresa_id
+    ).first()
+    if not variante:
+        raise HTTPException(404, "Variante no encontrada")
+    filas = db.query(VarianteIngredientes, Producto).join(
+        Producto, VarianteIngredientes.ingrediente_id == Producto.id
+    ).filter(VarianteIngredientes.variante_id == variante_id).all()
+    return [
+        {"id": vi.id, "ingrediente_id": vi.ingrediente_id, "nombre": prod.nombre, "cantidad": vi.cantidad}
+        for vi, prod in filas
+    ]
+
+
+@router.put("/variantes/{variante_id}/ingredientes")
+def guardar_ingredientes_variante(
+    variante_id: int, data: dict, db: Session = Depends(get_db),
+    empresa_id: int = Depends(get_empresa_actual),
+    _=Depends(get_current_user)
+):
+    """
+    Reemplaza por completo la lista de ingredientes de esta variante.
+    Si una variante NO tiene ingredientes propios aquí, al venderla se
+    usa la receta base del producto (comportamiento normal). Esto es
+    para cuando una variante especifica (ej: "Doble Carne") necesita
+    una lista de ingredientes distinta a la del producto base.
+    data = {"ingredientes": [{"ingrediente_id": 5, "cantidad": 200}]}
+    """
+    variante = db.query(ProductoVariante).join(Producto).filter(
+        ProductoVariante.id == variante_id, Producto.empresa_id == empresa_id
+    ).first()
+    if not variante:
+        raise HTTPException(404, "Variante no encontrada")
+
+    db.query(VarianteIngredientes).filter(VarianteIngredientes.variante_id == variante_id).delete()
+    for ing in data.get("ingredientes", []):
+        db.add(VarianteIngredientes(
+            variante_id=variante_id, ingrediente_id=ing["ingrediente_id"], cantidad=ing["cantidad"]
+        ))
     db.commit()
     return {"ok": True}
