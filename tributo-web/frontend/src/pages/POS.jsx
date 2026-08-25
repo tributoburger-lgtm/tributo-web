@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Trash2, ShoppingCart, CreditCard, ChevronDown } from 'lucide-react'
+import { Search, Trash2, ShoppingCart, CreditCard, ChevronDown, Plus } from 'lucide-react'
 import { productosApi, ventasApi, configApi } from '../utils/api'
+import ExtrasSelectorModal from '../components/shared/ExtrasSelectorModal'
 import { useAuthStore } from '../store/authStore'
 
 export default function POS() {
@@ -10,17 +11,20 @@ export default function POS() {
   const [moneda, setMoneda] = useState('USD')
   const [showPago, setShowPago] = useState(false)
   const [varModal, setVarModal] = useState(null) // producto con variantes
-  const { user } = useAuthStore()
+  const [extrasModal, setExtrasModal] = useState(null) // { prod, variante }
+  const { user, token } = useAuthStore()
   const qc = useQueryClient()
 
   const { data: productos = [] } = useQuery({
-    queryKey: ['productos'],
-    queryFn: () => productosApi.listar({ activo: true }).then(r => r.data)
+    queryKey: ['productos', token],
+    queryFn: () => productosApi.listar({ activo: true }).then(r => r.data),
+    enabled: !!token
   })
 
   const { data: tasas = [] } = useQuery({
-    queryKey: ['tasas'],
-    queryFn: () => configApi.tasas().then(r => r.data)
+    queryKey: ['tasas', token],
+    queryFn: () => configApi.tasas().then(r => r.data),
+    enabled: !!token
   })
 
   const tasa = (m) => {
@@ -32,9 +36,11 @@ export default function POS() {
     !search || p.nombre.toLowerCase().includes(search.toLowerCase())
   )
 
-  const addToCart = (prod, variante = null) => {
-    const key = `${prod.id}-${variante?.id || 0}`
-    const precio = variante?.precio_usd || prod.precio_venta_usd
+  const addToCart = (prod, variante = null, extrasElegidos = []) => {
+    const extrasIds = extrasElegidos.map(e => e.id).sort().join(',')
+    const key = `${prod.id}-${variante?.id || 0}-${extrasIds}`
+    const precioBase = variante?.precio_usd || prod.precio_venta_usd
+    const precioExtras = extrasElegidos.reduce((s, e) => s + e.precio_usd, 0)
     setCart(prev => {
       const existing = prev.find(i => i.key === key)
       if (existing) {
@@ -43,17 +49,28 @@ export default function POS() {
       return [...prev, {
         key, prod_id: prod.id, variante_id: variante?.id || null,
         nombre: variante ? `${prod.nombre} ${variante.nombre}` : prod.nombre,
-        precio_usd: precio, qty: 1
+        precio_usd: precioBase + precioExtras, qty: 1,
+        extras: extrasElegidos.map(e => e.id),
+        extrasNombres: extrasElegidos.map(e => e.nombre),
       }]
     })
     setVarModal(null)
+    setExtrasModal(null)
+  }
+
+  const siguientePaso = (prod, variante = null) => {
+    if (prod.extras?.length > 0) {
+      setExtrasModal({ prod, variante })
+    } else {
+      addToCart(prod, variante)
+    }
   }
 
   const handleProductClick = (prod) => {
     if (prod.tiene_variantes && prod.variantes?.length > 0) {
       setVarModal(prod)
     } else {
-      addToCart(prod)
+      siguientePaso(prod)
     }
   }
 
@@ -88,7 +105,8 @@ export default function POS() {
         variante_id: i.variante_id,
         cantidad: i.qty,
         precio_unitario_usd: i.precio_usd,
-        nombre: i.nombre
+        nombre: i.nombre,
+        extras: i.extras || [],
       })),
       pagos
     })
@@ -217,7 +235,7 @@ export default function POS() {
               {varModal.variantes?.map(v => (
                 <button
                   key={v.id}
-                  onClick={() => addToCart(varModal, v)}
+                  onClick={() => siguientePaso(varModal, v)}
                   className="w-full bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-yellow-400 rounded-xl px-4 py-3 text-left flex justify-between items-center transition-colors"
                 >
                   <span className="text-white font-medium">{v.nombre}</span>
@@ -228,6 +246,16 @@ export default function POS() {
             <button onClick={() => setVarModal(null)} className="w-full mt-4 text-zinc-500 hover:text-zinc-300 text-sm">Cancelar</button>
           </div>
         </div>
+      )}
+
+      {/* Modal extras */}
+      {extrasModal && (
+        <ExtrasSelectorModal
+          prod={extrasModal.prod}
+          variante={extrasModal.variante}
+          onConfirm={(extras) => addToCart(extrasModal.prod, extrasModal.variante, extras)}
+          onClose={() => setExtrasModal(null)}
+        />
       )}
 
       {/* Modal pago */}

@@ -256,10 +256,95 @@ function AbrirTurnoModal({ onClose, onSuccess }) {
   )
 }
 
+const COP_BILLS = [
+  ['100.000', 100000], ['50.000', 50000], ['20.000', 20000],
+  ['10.000', 10000], ['5.000', 5000], ['2.000', 2000], ['Monedas', 1],
+]
+const USD_BILLS = [
+  ['100', 100], ['50', 50], ['20', 20], ['10', 10], ['5', 5], ['1', 1],
+]
+
+function BilletesCalculator({ onUsarCop, onUsarUsd }) {
+  const [cop, setCop] = useState(Object.fromEntries(COP_BILLS.map(([l]) => [l, ''])))
+  const [usd, setUsd] = useState(Object.fromEntries(USD_BILLS.map(([l]) => [l, ''])))
+
+  const totalCop = COP_BILLS.reduce((s, [l, v]) => s + (parseInt(cop[l]) || 0) * v, 0)
+  const totalUsd = USD_BILLS.reduce((s, [l, v]) => s + (parseInt(usd[l]) || 0) * v, 0)
+
+  const limpiar = () => {
+    setCop(Object.fromEntries(COP_BILLS.map(([l]) => [l, ''])))
+    setUsd(Object.fromEntries(USD_BILLS.map(([l]) => [l, ''])))
+  }
+
+  return (
+    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-4">
+      <p className="text-zinc-400 text-xs uppercase">Contar billetes (opcional)</p>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <p className="text-zinc-500 text-xs font-semibold">Pesos COP</p>
+          {COP_BILLS.map(([label, denom]) => (
+            <div key={label} className="flex items-center gap-1.5">
+              <span className="text-zinc-500 text-xs w-16 shrink-0">$ {label}</span>
+              <input
+                type="number" min="0" value={cop[label]}
+                onChange={e => setCop(prev => ({ ...prev, [label]: e.target.value }))}
+                className="w-14 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-1 text-white text-xs text-center"
+              />
+              <span className="text-zinc-600 text-xs ml-auto">
+                {((parseInt(cop[label]) || 0) * denom).toLocaleString()}
+              </span>
+            </div>
+          ))}
+          <div className="flex justify-between pt-1.5 border-t border-zinc-800">
+            <span className="text-amber-400 text-xs font-bold">Total</span>
+            <span className="text-amber-400 text-xs font-mono font-bold">COP$ {totalCop.toLocaleString()}</span>
+          </div>
+          {onUsarCop && (
+            <button onClick={() => onUsarCop(totalCop)}
+              className="w-full text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg py-1.5 mt-1">
+              Usar este total
+            </button>
+          )}
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-zinc-500 text-xs font-semibold">Dólares USD</p>
+          {USD_BILLS.map(([label, denom]) => (
+            <div key={label} className="flex items-center gap-1.5">
+              <span className="text-zinc-500 text-xs w-16 shrink-0">$ {label}</span>
+              <input
+                type="number" min="0" value={usd[label]}
+                onChange={e => setUsd(prev => ({ ...prev, [label]: e.target.value }))}
+                className="w-14 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-1 text-white text-xs text-center"
+              />
+              <span className="text-zinc-600 text-xs ml-auto">
+                {((parseInt(usd[label]) || 0) * denom).toLocaleString()}
+              </span>
+            </div>
+          ))}
+          <div className="flex justify-between pt-1.5 border-t border-zinc-800">
+            <span className="text-green-400 text-xs font-bold">Total</span>
+            <span className="text-green-400 text-xs font-mono font-bold">$ {totalUsd.toFixed(2)}</span>
+          </div>
+          {onUsarUsd && (
+            <button onClick={() => onUsarUsd(totalUsd)}
+              className="w-full text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg py-1.5 mt-1">
+              Usar este total
+            </button>
+          )}
+        </div>
+      </div>
+      <button onClick={limpiar} className="text-zinc-600 hover:text-zinc-400 text-xs">
+        Limpiar todo
+      </button>
+    </div>
+  )
+}
+
 function CerrarTurnoModal({ turno, onClose, onSuccess }) {
   const [efectivoUsd, setEfectivoUsd] = useState('')
   const [efectivoCop, setEfectivoCop] = useState('')
   const [notas, setNotas] = useState('')
+  const [showBilletes, setShowBilletes] = useState(false)
 
   const mutation = useMutation({
     mutationFn: () => cajaApi.cerrarTurno(turno.id, {
@@ -271,8 +356,8 @@ function CerrarTurnoModal({ turno, onClose, onSuccess }) {
   })
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-zinc-900 rounded-2xl p-6 w-96 border border-zinc-700">
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 rounded-2xl p-6 w-full max-w-md border border-zinc-700 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-white font-bold text-xl">Cerrar turno</h2>
           <button onClick={onClose} className="text-zinc-500 hover:text-white"><X size={20} /></button>
@@ -289,6 +374,20 @@ function CerrarTurnoModal({ turno, onClose, onSuccess }) {
             <input type="number" value={efectivoCop} onChange={e => setEfectivoCop(e.target.value)}
               className="w-full bg-zinc-800 border border-yellow-400 rounded-lg px-3 py-2.5 text-yellow-400 font-mono text-lg" />
           </div>
+
+          <button
+            onClick={() => setShowBilletes(s => !s)}
+            className="text-xs text-blue-400 hover:text-blue-300"
+          >
+            {showBilletes ? '− Ocultar contador de billetes' : '+ Contar billetes para calcular el total'}
+          </button>
+          {showBilletes && (
+            <BilletesCalculator
+              onUsarUsd={(t) => setEfectivoUsd(t.toString())}
+              onUsarCop={(t) => setEfectivoCop(t.toString())}
+            />
+          )}
+
           <div>
             <label className="text-zinc-400 text-sm block mb-1">Notas de cierre</label>
             <textarea value={notas} onChange={e => setNotas(e.target.value)} rows={2}
